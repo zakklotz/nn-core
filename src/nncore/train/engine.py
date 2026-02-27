@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, Optional, Union
 
 import torch
 
+from nncore.constraints import build_constraint
 
 ForwardOut = Union[torch.Tensor, Dict[str, Any]]
 ForwardFn = Callable[[torch.nn.Module, Any], ForwardOut]
@@ -22,15 +23,6 @@ class TrainerConfig:
 class Trainer:
     """
     Minimal training engine.
-
-    - Does NOT create the model.
-    - Does NOT compute the loss by itself.
-    - Owns optimization details: backward, scaler (optional), grad clip, optimizer/scheduler step.
-    - Caller provides forward_fn(model, batch) -> loss tensor OR {"loss": loss, ...metrics}.
-
-    Typical usage:
-        trainer = Trainer(model, optimizer, scheduler=sched, device=device, amp=True, logger=logger)
-        out = trainer.train_step(forward_fn, batch)
     """
 
     def __init__(
@@ -63,18 +55,27 @@ class Trainer:
             clip_grad_norm=clip_grad_norm,
         )
 
-        # AMP scaler (only meaningful on CUDA)
         self.scaler = scaler
         if self.cfg.amp:
             if self.device.type != "cuda":
-                # AMP on CPU is not useful; keep it off silently.
                 self.cfg.amp = False
                 self.scaler = None
             else:
                 self.scaler = self.scaler or torch.amp.GradScaler()
 
         self.global_step = 0
-        self._accum_step = 0  # counts micro-steps since last optimizer step
+        self._accum_step = 0
+        self._constraints: list[tuple[object, float]] = []
+        self._init_constraints()
+
+    def _init_constraints(self) -> None:
+        model_cfg = getattr(self.model, "config", None)
+        cfg_constraints = getattr(model_cfg, "constraints", None)
+        if not cfg_constraints:
+            return
+        for entry in cfg_constraints:
+            constraint = build_constraint(entry.name, dict(entry.params))
+            self._constraints.append((constraint, float(entry.weight)))
 
     def _autocast(self):
         return torch.amp.autocast(
@@ -82,13 +83,6 @@ class Trainer:
             dtype=torch.float16 if self.device.type == "cuda" else None,
             enabled=self.cfg.amp and self.device.type == "cuda",
         )
-
-    def _log(self, msg: str) -> None:
-        if self.logger is not None:
-            try:
-                self.logger.info(msg)
-            except Exception:
-                pass
 
     def _normalize_forward_out(self, out: ForwardOut) -> Dict[str, Any]:
         if isinstance(out, torch.Tensor):
@@ -101,19 +95,43 @@ class Trainer:
             return out
         raise TypeError("forward_fn must return a loss tensor or a dict containing a 'loss' tensor.")
 
+    def _compute_constraint_losses(
+        self,
+        *,
+        batch: Any,
+        outputs: Dict[str, Any],
+        step: int,
+    ) -> dict[str, torch.Tensor]:
+        totals: dict[str, torch.Tensor] = {}
+        if not self._constraints:
+            return totals
+
+        for constraint, weight in self._constraints:
+            losses = constraint.compute(
+                model=self.model,
+                batch=batch,
+                outputs=outputs,
+                step=step,
+                state=None,
+            )
+            if not isinstance(losses, dict):
+                raise ValueError("Constraint.compute must return dict[str, Tensor].")
+            for key, value in losses.items():
+                if not isinstance(value, torch.Tensor):
+                    raise ValueError(f"Constraint loss {key!r} must be a torch.Tensor.")
+                if value.dim() != 0:
+                    raise ValueError(f"Constraint loss {key!r} must be a scalar tensor.")
+                if value.device != self.device:
+                    raise ValueError(
+                        f"Constraint loss {key!r} is on {value.device}, expected {self.device}."
+                    )
+                weighted = value * float(weight)
+                totals[key] = totals[key] + weighted if key in totals else weighted
+
+        return totals
+
     def train_step(self, forward_fn: ForwardFn, batch: Any) -> Dict[str, Any]:
-        """
-        Runs one *micro-step* (supports grad accumulation). Optimizer/scheduler step happens
-        every grad_accum_steps calls.
-
-        Returns a dict with:
-          - loss (float)
-          - stepped (bool): whether optimizer stepped this call
-          - any additional metrics returned by forward_fn (converted to python scalars if possible)
-        """
         self.model.train()
-
-        # Move common batch types to device (best-effort, non-invasive)
         batch = self._to_device(batch)
 
         with self._autocast():
@@ -122,13 +140,19 @@ class Trainer:
             loss_t = out["loss"]
 
             if loss_t.dim() != 0:
-                # ensure scalar
                 loss_t = loss_t.mean()
 
-            # scale for accumulation
+            constraint_losses = self._compute_constraint_losses(
+                batch=batch,
+                outputs=out,
+                step=self.global_step,
+            )
+            if constraint_losses:
+                loss_t = loss_t + sum(constraint_losses.values())
+                out.update(constraint_losses)
+
             loss_scaled = loss_t / float(self.cfg.grad_accum_steps)
 
-        # Backward
         if self.scaler is not None:
             self.scaler.scale(loss_scaled).backward()
         else:
@@ -138,39 +162,32 @@ class Trainer:
         stepped = False
 
         if self._accum_step >= self.cfg.grad_accum_steps:
-            # Optional grad clipping
             if self.cfg.clip_grad_norm is not None:
                 if self.scaler is not None:
-                    # unscale before clipping
                     self.scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(
                     self.model.parameters(),
                     max_norm=float(self.cfg.clip_grad_norm),
                 )
 
-            # Optimizer step
             if self.scaler is not None:
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
                 self.optimizer.step()
 
-            # Scheduler step (common convention: after optimizer step)
             if self.scheduler is not None:
                 try:
                     self.scheduler.step()
                 except TypeError:
-                    # some schedulers want a metric; caller can handle that externally
                     self.scheduler.step()
 
-            # Zero grads
             self.optimizer.zero_grad(set_to_none=True)
 
             self._accum_step = 0
             self.global_step += 1
             stepped = True
 
-        # Prepare return dict
         result: Dict[str, Any] = {"loss": float(loss_t.detach().cpu().item()), "stepped": stepped}
         for k, v in out.items():
             if k == "loss":
@@ -180,9 +197,6 @@ class Trainer:
 
     @torch.no_grad()
     def eval_step(self, forward_fn: ForwardFn, batch: Any) -> Dict[str, Any]:
-        """
-        Runs a forward-only eval step. Does not update weights.
-        """
         self.model.eval()
         batch = self._to_device(batch)
 
@@ -201,9 +215,6 @@ class Trainer:
         return result
 
     def state_dict(self) -> Dict[str, Any]:
-        """
-        Minimal trainer state (not checkpointing model weights—caller can do that via nncore.io).
-        """
         sd: Dict[str, Any] = {
             "global_step": self.global_step,
             "accum_step": self._accum_step,
@@ -226,12 +237,6 @@ class Trainer:
         return v
 
     def _to_device(self, batch: Any) -> Any:
-        """
-        Best-effort move to device:
-          - torch.Tensor
-          - dict[str, ...]
-          - (list/tuple) of items
-        """
         if torch.is_tensor(batch):
             return batch.to(self.device)
         if isinstance(batch, dict):
