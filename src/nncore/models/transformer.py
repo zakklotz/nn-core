@@ -4,6 +4,7 @@ import torch.nn as nn
 from nncore.blocks import TransformerBlock
 from nncore.cache import KVCache
 from nncore.layers import MultiheadAttention, MLP
+from nncore.hooks import Hook
 from nncore.layers.norm_factory import make_norm
 from nncore.models.config import TransformerConfig
 from nncore.recurrence import ExitRouter, RecurrenceEngine, ResidualRule
@@ -422,6 +423,7 @@ class Transformer(nn.Module):
         step_idx: int | None = None,
         return_aux: bool = False,
         exit_router: ExitRouter | None = None,
+        hooks: list[Hook] | None = None,
     ):
         pos_offset = 0
         if kv_cache is not None and is_decode:
@@ -474,6 +476,12 @@ class Transformer(nn.Module):
                     else:
                         x = out
             x = self.enc_final_norm(x) if self.enc_final_norm is not None else x
+            if hooks:
+                for hook in hooks:
+                    x = hook.on_hidden(x, step=None, state=None)
+            if return_aux and hooks:
+                for hook in hooks:
+                    aux_totals = hook.on_loss(aux_totals, step=None, state=None)
             return (x, aux_totals) if return_aux else x
 
         if has_decoder and not has_encoder:
@@ -518,9 +526,21 @@ class Transformer(nn.Module):
                     else:
                         x = out
             x = self.dec_final_norm(x) if self.dec_final_norm is not None else x
+            if hooks:
+                for hook in hooks:
+                    x = hook.on_hidden(x, step=None, state=None)
             if self.config.return_hidden:
+                if return_aux and hooks:
+                    for hook in hooks:
+                        aux_totals = hook.on_loss(aux_totals, step=None, state=None)
                 return (x, aux_totals) if return_aux else x
             logits = self.lm_head(x)
+            if hooks:
+                for hook in hooks:
+                    logits = hook.on_logits(logits, step=None, state=None)
+            if return_aux and hooks:
+                for hook in hooks:
+                    aux_totals = hook.on_loss(aux_totals, step=None, state=None)
             return (logits, aux_totals) if return_aux else logits
 
         # Seq2seq requires tgt_ids
@@ -601,7 +621,19 @@ class Transformer(nn.Module):
                     dec = out
 
         dec = self.dec_final_norm(dec) if self.dec_final_norm is not None else dec
+        if hooks:
+            for hook in hooks:
+                dec = hook.on_hidden(dec, step=None, state=None)
         if self.config.return_hidden:
+            if return_aux and hooks:
+                for hook in hooks:
+                    aux_totals = hook.on_loss(aux_totals, step=None, state=None)
             return (dec, aux_totals) if return_aux else dec
         logits = self.lm_head(dec)
+        if hooks:
+            for hook in hooks:
+                logits = hook.on_logits(logits, step=None, state=None)
+        if return_aux and hooks:
+            for hook in hooks:
+                aux_totals = hook.on_loss(aux_totals, step=None, state=None)
         return (logits, aux_totals) if return_aux else logits
