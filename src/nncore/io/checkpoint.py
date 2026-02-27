@@ -18,6 +18,7 @@ def save_checkpoint(
     
     checkpoint = {
         "model": model.state_dict(),
+        "config": getattr(model, "config", None),
         "optimizer": optimizer.state_dict() if optimizer else None,
         "scheduler": scheduler.state_dict() if scheduler else None,
         "scaler": scaler.state_dict() if scaler else None,

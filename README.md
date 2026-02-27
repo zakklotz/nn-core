@@ -17,6 +17,21 @@ higher-level experiment and research repositories.
 
 ------------------------------------------------------------------------
 
+## Architecture Overview
+
+nn-core provides:
+
+- Modular attention kernels (manual + SDPA)
+- Config-driven Transformer construction
+- Encoder, Decoder, and Seq2Seq modes
+- Minimal training engine with AMP + grad accumulation
+- Toy LM CLI harness
+- Strict shape validation utilities
+
+Designed as the foundation for higher-level systems.
+
+------------------------------------------------------------------------
+
 ## Philosophy
 
 `nn-core` is intentionally minimal and architecture-focused.
