@@ -262,6 +262,8 @@ class Transformer(nn.Module):
                         positional=self.config.positional,
                         max_seq_len=self.config.max_seq_len,
                         use_kv_cache=self.config.attn.use_kv_cache,
+                        ffn_type=self.config.block.ffn_type,
+                        moe_cfg=self.config.block.moe,
                     )
                     for _ in range(self.config.num_encoder_layers)
                 ]
@@ -321,6 +323,8 @@ class Transformer(nn.Module):
                             positional=self.config.positional,
                             max_seq_len=self.config.max_seq_len,
                             use_kv_cache=self.config.attn.use_kv_cache,
+                            ffn_type=self.config.block.ffn_type,
+                            moe_cfg=self.config.block.moe,
                         )
                         for _ in range(self.config.num_decoder_layers)
                     ]
@@ -361,10 +365,13 @@ class Transformer(nn.Module):
         is_decode: bool = False,
         step_cache=None,
         step_idx: int | None = None,
+        return_aux: bool = False,
     ):
         pos_offset = 0
         if kv_cache is not None and is_decode:
             _, _, pos_offset = kv_cache.get(0)
+
+        aux_totals: dict[str, torch.Tensor] = {}
 
         has_encoder = self.encoder is not None
         has_decoder = self.decoder is not None
@@ -373,15 +380,32 @@ class Transformer(nn.Module):
             # Encoder-only
             x = self._embed(src_ids, pos_offset=pos_offset)
             for i, blk in enumerate(self.encoder):
-                x = blk(x, key_padding_mask=src_key_padding_mask, is_causal=False, pos_offset=pos_offset, kv_cache=kv_cache, layer_idx=i, is_decode=is_decode, step_cache=step_cache, step_idx=step_idx)
+                out = blk(
+                    x,
+                    key_padding_mask=src_key_padding_mask,
+                    is_causal=False,
+                    pos_offset=pos_offset,
+                    kv_cache=kv_cache,
+                    layer_idx=i,
+                    is_decode=is_decode,
+                    step_cache=step_cache,
+                    step_idx=step_idx,
+                    return_aux=return_aux,
+                )
+                if return_aux:
+                    x, blk_aux = out
+                    for k, v in blk_aux.items():
+                        aux_totals[k] = aux_totals.get(k, 0.0) + v
+                else:
+                    x = out
             x = self.enc_final_norm(x) if self.enc_final_norm is not None else x
-            return x
+            return (x, aux_totals) if return_aux else x
 
         if has_decoder and not has_encoder:
             # Decoder-only (GPT-like). src_ids is the decoder input ids here.
             x = self._embed(src_ids, pos_offset=pos_offset)
             for i, blk in enumerate(self.decoder):
-                x = blk(
+                out = blk(
                     x,
                     key_padding_mask=tgt_key_padding_mask,
                     is_causal=True,
@@ -391,11 +415,19 @@ class Transformer(nn.Module):
                     is_decode=is_decode,
                     step_cache=step_cache,
                     step_idx=step_idx,
+                    return_aux=return_aux,
                 )
+                if return_aux:
+                    x, blk_aux = out
+                    for k, v in blk_aux.items():
+                        aux_totals[k] = aux_totals.get(k, 0.0) + v
+                else:
+                    x = out
             x = self.dec_final_norm(x) if self.dec_final_norm is not None else x
             if self.config.return_hidden:
-                return x
-            return self.lm_head(x)
+                return (x, aux_totals) if return_aux else x
+            logits = self.lm_head(x)
+            return (logits, aux_totals) if return_aux else logits
 
         # Seq2seq requires tgt_ids
         if tgt_ids is None:
@@ -403,8 +435,20 @@ class Transformer(nn.Module):
 
         # Encode
         enc = self._embed(src_ids, pos_offset=0)
-        for blk in self.encoder:
-            enc = blk(enc, key_padding_mask=src_key_padding_mask, is_causal=False, pos_offset=0)
+        for i, blk in enumerate(self.encoder):
+            out = blk(
+                enc,
+                key_padding_mask=src_key_padding_mask,
+                is_causal=False,
+                pos_offset=0,
+                return_aux=return_aux,
+            )
+            if return_aux:
+                enc, blk_aux = out
+                for k, v in blk_aux.items():
+                    aux_totals[k] = aux_totals.get(k, 0.0) + v
+            else:
+                enc = out
         enc = self.enc_final_norm(enc) if self.enc_final_norm is not None else enc
 
         # Decode with cross-attn
@@ -424,7 +468,7 @@ class Transformer(nn.Module):
                     step_idx=step_idx,
                 )
             else:
-                dec = blk(
+                out = blk(
                     dec,
                     key_padding_mask=tgt_key_padding_mask,
                     is_causal=True,
@@ -434,9 +478,17 @@ class Transformer(nn.Module):
                     is_decode=is_decode,
                     step_cache=step_cache,
                     step_idx=step_idx,
+                    return_aux=return_aux,
                 )
+                if return_aux:
+                    dec, blk_aux = out
+                    for k, v in blk_aux.items():
+                        aux_totals[k] = aux_totals.get(k, 0.0) + v
+                else:
+                    dec = out
 
         dec = self.dec_final_norm(dec) if self.dec_final_norm is not None else dec
         if self.config.return_hidden:
-            return dec
-        return self.lm_head(dec)
+            return (dec, aux_totals) if return_aux else dec
+        logits = self.lm_head(dec)
+        return (logits, aux_totals) if return_aux else logits
