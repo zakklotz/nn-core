@@ -139,34 +139,29 @@ def _sdpa_torch(
     )
 
 
-def scaled_dot_product_attention(
+def attention_forward(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
     *,
     attn_mask: Optional[torch.Tensor] = None,
-    is_causal: bool = False,
     dropout_p: float = 0.0,
+    is_causal: bool = False,
+    backend: str = "auto",
     scale: Optional[float] = None,
-    backend: str = "manual",
     normalize: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
 ) -> torch.Tensor:
     """
-    q, k, v: (B, H, T, D_h)
-    Returns: (B, H, T, D_h)
+    Routed attention entrypoint.
 
-    normalize:
-      A callable that maps scores (B,H,Tq,Tk) -> weights (B,H,Tq,Tk).
-      If None, uses softmax(scores, dim=-1).
-      Only supported for backend='manual'.
+    q, k, v: (B, H, T, D_h)
+    Returns: (B, H, T_q, D_h)
     """
-    # Validate q/k/v shapes (B,H,T,Dh) and compatibility
     check_qkv(q, k, v)
 
     B, H, Tq, _ = q.shape
     Tk = k.shape[-2]
 
-    # Validate attn_mask shapes if provided
     if attn_mask is not None:
         check_attn_mask_shape(attn_mask, B=B, H=H, Tq=Tq, Tk=Tk)
 
@@ -181,7 +176,8 @@ def scaled_dot_product_attention(
             scale=scale,
             normalize=normalize,
         )
-    elif backend == "sdpa":
+
+    if backend == "sdpa":
         return _sdpa_torch(
             q,
             k,
@@ -192,5 +188,66 @@ def scaled_dot_product_attention(
             scale=scale,
             normalize=normalize,
         )
-    else:
-        raise ValueError(f"Unknown attention backend: {backend!r}")
+
+    if backend == "auto":
+        if normalize is not None:
+            return _sdpa_manual(
+                q,
+                k,
+                v,
+                attn_mask=attn_mask,
+                is_causal=is_causal,
+                dropout_p=dropout_p,
+                scale=scale,
+                normalize=normalize,
+            )
+        try:
+            return _sdpa_torch(
+                q,
+                k,
+                v,
+                attn_mask=attn_mask,
+                is_causal=is_causal,
+                dropout_p=dropout_p,
+                scale=scale,
+                normalize=normalize,
+            )
+        except (RuntimeError, NotImplementedError, ValueError):
+            return _sdpa_manual(
+                q,
+                k,
+                v,
+                attn_mask=attn_mask,
+                is_causal=is_causal,
+                dropout_p=dropout_p,
+                scale=scale,
+                normalize=normalize,
+            )
+
+    raise ValueError(f"Unknown attention backend: {backend!r}")
+
+
+def scaled_dot_product_attention(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    *,
+    attn_mask: Optional[torch.Tensor] = None,
+    is_causal: bool = False,
+    dropout_p: float = 0.0,
+    scale: Optional[float] = None,
+    backend: str = "manual",
+    normalize: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
+) -> torch.Tensor:
+    """Backward-compatible wrapper around :func:`attention_forward`."""
+    return attention_forward(
+        q,
+        k,
+        v,
+        attn_mask=attn_mask,
+        dropout_p=dropout_p,
+        is_causal=is_causal,
+        backend=backend,
+        scale=scale,
+        normalize=normalize,
+    )
