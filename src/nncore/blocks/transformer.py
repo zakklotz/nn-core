@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 
 from nncore.layers import MultiheadAttention, MLP
+from nncore.layers.norm_factory import make_norm
 
 
 class TransformerBlock(nn.Module):
@@ -28,6 +29,8 @@ class TransformerBlock(nn.Module):
         bias: bool = True,
         attn_scale: float | None = None,
         attn_normalize=None,             # callable(scores)->weights, only for manual backend
+        norm: str = "layernorm",
+        norm_eps: float = 1e-5,
     ):
         super().__init__()
 
@@ -36,8 +39,8 @@ class TransformerBlock(nn.Module):
             raise ValueError(f"norm_style must be 'pre' or 'post', got {norm_style!r}")
         self.norm_style = norm_style
 
-        self.ln1 = nn.LayerNorm(d_model)
-        self.ln2 = nn.LayerNorm(d_model)
+        self.ln1 = make_norm(norm, d_model, norm_eps)
+        self.ln2 = make_norm(norm, d_model, norm_eps)
 
         self.attn = MultiheadAttention(
             d_model=d_model,
