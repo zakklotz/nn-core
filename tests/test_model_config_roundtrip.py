@@ -1,4 +1,4 @@
-from nncore.models import ConstraintConfig, MoEConfig, TajalliConfig, TransformerConfig
+from nncore.models import ConstraintConfig, MoEConfig, TransformerConfig
 
 
 def test_transformer_config_roundtrip():
@@ -16,7 +16,6 @@ def test_transformer_config_roundtrip():
         use_exit_router=True,
         constraints=[ConstraintConfig(name="latency", weight=0.2, params={"target_ms": 12})],
         hooks=True,
-        tajalli=TajalliConfig(essence_dim=128),
         tie_weights=True,
         return_hidden=False,
     )
@@ -49,8 +48,6 @@ def test_transformer_config_roundtrip():
     assert cfg2.constraints[0].name == "latency"
     assert cfg2.constraints[0].params["target_ms"] == 12
     assert cfg2.hooks == cfg.hooks
-    assert cfg2.tajalli is not None
-    assert cfg2.tajalli.essence_dim == 128
     assert cfg2.attn.backend == cfg.attn.backend
     assert cfg2.attn.attn_backend == cfg.attn.attn_backend
     assert abs(cfg2.attn.dropout_p - cfg.attn.dropout_p) < 1e-9
@@ -80,4 +77,3 @@ def test_transformer_config_new_defaults():
     assert cfg.use_exit_router is False
     assert cfg.constraints is None
     assert cfg.hooks is False
-    assert cfg.tajalli is None
