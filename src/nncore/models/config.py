@@ -16,15 +16,6 @@ class MoEConfig:
 
 
 @dataclass
-class TajalliConfig:
-    essence_dim: int = 1024
-    n_attributes: int = 7
-    alpha_init: float = 0.7
-    essence_warmup_steps: int = 2000
-    gate_entropy_weight: float = 0.01
-
-
-@dataclass
 class ConstraintConfig:
     name: str
     weight: float = 1.0
@@ -40,7 +31,6 @@ class AttentionConfig:
     scale: float | None = None
     use_kv_cache: bool = False
     # Custom normalization callable is NOT serializable; leave it out of config.
-    # Tajalli can inject it at runtime via model construction kwargs.
     # normalize: Any = None
 
 
@@ -72,7 +62,6 @@ class TransformerConfig:
     use_exit_router: bool = False
     constraints: list[ConstraintConfig] | None = None
     hooks: bool = False
-    tajalli: TajalliConfig | None = None
 
     tie_weights: bool = True
     return_hidden: bool = False
@@ -99,8 +88,6 @@ class TransformerConfig:
         if constraints_d is not None:
             constraints = [ConstraintConfig(**item) for item in constraints_d]
 
-        tajalli_d = d.get("tajalli")
-        tajalli = TajalliConfig(**tajalli_d) if tajalli_d is not None else None
 
         return TransformerConfig(
             vocab_size=int(d["vocab_size"]),
@@ -116,7 +103,6 @@ class TransformerConfig:
             use_exit_router=bool(d.get("use_exit_router", False)),
             constraints=constraints,
             hooks=bool(d.get("hooks", False)),
-            tajalli=tajalli,
             tie_weights=bool(d.get("tie_weights", True)),
             return_hidden=bool(d.get("return_hidden", False)),
             attn=AttentionConfig(**attn_d),

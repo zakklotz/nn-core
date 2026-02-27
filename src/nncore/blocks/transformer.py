@@ -4,6 +4,9 @@ import torch
 import torch.nn as nn
 
 from nncore.layers import MultiheadAttention, MLP
+from nncore.layers.norm_factory import make_norm
+from nncore.models.config import MoEConfig
+from nncore.moe import MoELayer
 
 
 class TransformerBlock(nn.Module):
@@ -11,8 +14,8 @@ class TransformerBlock(nn.Module):
     Transformer block with configurable LayerNorm style.
 
     norm_style:
-      - "pre":  x = x + Attn(LN(x)); x = x + MLP(LN(x))   (default, more stable)
-      - "post": x = LN(x + Attn(x)); x = LN(x + MLP(x))   (classic)
+      - "pre":  x = x + Attn(LN(x)); x = x + FFN(LN(x))
+      - "post": x = LN(x + Attn(x)); x = LN(x + FFN(x))
     """
 
     def __init__(
@@ -21,13 +24,20 @@ class TransformerBlock(nn.Module):
         num_heads: int,
         *,
         mlp_dims: list[int] | None = None,
-        norm_style: str = "pre",          # "pre" or "post"
-        attn_backend: str = "manual",     # "manual" or "sdpa"
+        norm_style: str = "pre",
+        attn_backend: str = "manual",
         attn_dropout_p: float = 0.0,
         resid_dropout_p: float = 0.0,
         bias: bool = True,
         attn_scale: float | None = None,
-        attn_normalize=None,             # callable(scores)->weights, only for manual backend
+        attn_normalize=None,
+        norm: str = "layernorm",
+        norm_eps: float = 1e-5,
+        positional: str = "absolute",
+        max_seq_len: int = 2048,
+        use_kv_cache: bool = False,
+        ffn_type: str = "mlp",
+        moe_cfg: MoEConfig | None = None,
     ):
         super().__init__()
 
@@ -36,8 +46,8 @@ class TransformerBlock(nn.Module):
             raise ValueError(f"norm_style must be 'pre' or 'post', got {norm_style!r}")
         self.norm_style = norm_style
 
-        self.ln1 = nn.LayerNorm(d_model)
-        self.ln2 = nn.LayerNorm(d_model)
+        self.ln1 = make_norm(norm, d_model, norm_eps)
+        self.ln2 = make_norm(norm, d_model, norm_eps)
 
         self.attn = MultiheadAttention(
             d_model=d_model,
@@ -48,16 +58,33 @@ class TransformerBlock(nn.Module):
             backend=attn_backend,
             scale=attn_scale,
             normalize=attn_normalize,
+            positional=positional,
+            max_seq_len=max_seq_len,
+            use_kv_cache=use_kv_cache,
         )
 
-        # Default transformer FFN dims: [d_model, 4*d_model, d_model]
         if mlp_dims is None:
             mlp_dims = [d_model, 4 * d_model, d_model]
-        self.mlp = MLP(dimensions=mlp_dims)
+
+        self.ffn_type = ffn_type
+        if self.ffn_type == "mlp":
+            self.ffn = MLP(dimensions=mlp_dims)
+        elif self.ffn_type == "moe":
+            if moe_cfg is None:
+                raise ValueError("moe_cfg must be provided when ffn_type='moe'.")
+            self.ffn = MoELayer(d_model=d_model, cfg=moe_cfg, mlp_hidden_fallback=mlp_dims[1])
+        else:
+            raise ValueError(f"Unknown ffn_type: {ffn_type!r}")
 
         self.resid_dropout = (
             nn.Dropout(resid_dropout_p) if resid_dropout_p > 0.0 else nn.Identity()
         )
+
+    def _ffn_forward(self, x: torch.Tensor) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        if self.ffn_type == "moe":
+            y, aux = self.ffn(x)
+            return y, aux
+        return self.ffn(x), {}
 
     def forward(
         self,
@@ -66,10 +93,18 @@ class TransformerBlock(nn.Module):
         attn_mask: torch.Tensor | None = None,
         key_padding_mask: torch.Tensor | None = None,
         is_causal: bool = False,
-        context: torch.Tensor | None = None,   # for cross-attn if desired
-    ) -> torch.Tensor:
+        context: torch.Tensor | None = None,
+        pos_offset: int = 0,
+        kv_cache=None,
+        layer_idx: int | None = None,
+        is_decode: bool = False,
+        step_cache=None,
+        step_idx: int | None = None,
+        return_aux: bool = False,
+    ):
+        aux_losses: dict[str, torch.Tensor] = {}
+
         if self.norm_style == "pre":
-            # Attention block (pre-norm)
             h = self.ln1(x)
             h = self.attn(
                 h,
@@ -77,25 +112,39 @@ class TransformerBlock(nn.Module):
                 attn_mask=attn_mask,
                 key_padding_mask=key_padding_mask,
                 is_causal=is_causal,
+                pos_offset=pos_offset,
+                kv_cache=kv_cache,
+                layer_idx=layer_idx,
+                is_decode=is_decode,
+                step_cache=step_cache,
+                step_idx=step_idx,
             )
             x = x + self.resid_dropout(h)
 
-            # MLP block (pre-norm)
             h = self.ln2(x)
-            h = self.mlp(h)
+            h, ffn_aux = self._ffn_forward(h)
             x = x + self.resid_dropout(h)
-            return x
+            aux_losses.update(ffn_aux)
 
-        # Post-norm
+            return (x, aux_losses) if return_aux else x
+
         h = self.attn(
             x,
             context=context,
             attn_mask=attn_mask,
             key_padding_mask=key_padding_mask,
             is_causal=is_causal,
+            pos_offset=pos_offset,
+            kv_cache=kv_cache,
+            layer_idx=layer_idx,
+            is_decode=is_decode,
+            step_cache=step_cache,
+            step_idx=step_idx,
         )
         x = self.ln1(x + self.resid_dropout(h))
 
-        h = self.mlp(x)
+        h, ffn_aux = self._ffn_forward(x)
         x = self.ln2(x + self.resid_dropout(h))
-        return x
+        aux_losses.update(ffn_aux)
+
+        return (x, aux_losses) if return_aux else x
