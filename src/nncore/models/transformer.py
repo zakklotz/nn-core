@@ -3,6 +3,7 @@ import torch.nn as nn
 
 from nncore.blocks import TransformerBlock
 from nncore.layers import MultiheadAttention, MLP
+from nncore.layers.norm_factory import make_norm
 from nncore.models.config import TransformerConfig
 
 
@@ -28,6 +29,8 @@ class TransformerDecoderBlock(nn.Module):
         bias: bool = True,
         attn_scale: float | None = None,
         attn_normalize=None,
+        norm: str = "layernorm",
+        norm_eps: float = 1e-5,
     ):
         super().__init__()
 
@@ -40,9 +43,9 @@ class TransformerDecoderBlock(nn.Module):
             mlp_dims = [d_model, 4 * d_model, d_model]
 
         # Norms: one per sublayer
-        self.ln_sa = nn.LayerNorm(d_model)
-        self.ln_ca = nn.LayerNorm(d_model)
-        self.ln_ff = nn.LayerNorm(d_model)
+        self.ln_sa = make_norm(norm, d_model, norm_eps)
+        self.ln_ca = make_norm(norm, d_model, norm_eps)
+        self.ln_ff = make_norm(norm, d_model, norm_eps)
 
         # Self-attention (causal)
         self.self_attn = MultiheadAttention(
@@ -223,11 +226,17 @@ class Transformer(nn.Module):
                         bias=self.config.block.bias,
                         attn_scale=self.config.attn.scale,
                         attn_normalize=attn_normalize,
+                        norm=self.config.block.norm,
+                        norm_eps=self.config.block.norm_eps,
                     )
                     for _ in range(self.config.num_encoder_layers)
                 ]
             )
-            self.enc_final_norm = nn.LayerNorm(self.config.d_model)
+            self.enc_final_norm = make_norm(
+                self.config.block.norm,
+                self.config.d_model,
+                self.config.block.norm_eps,
+            )
         else:
             self.enc_final_norm = None
 
@@ -249,6 +258,8 @@ class Transformer(nn.Module):
                             bias=self.config.block.bias,
                             attn_scale=self.config.attn.scale,
                             attn_normalize=attn_normalize,
+                            norm=self.config.block.norm,
+                            norm_eps=self.config.block.norm_eps,
                         )
                         for _ in range(self.config.num_decoder_layers)
                     ]
@@ -268,12 +279,18 @@ class Transformer(nn.Module):
                             bias=self.config.block.bias,
                             attn_scale=self.config.attn.scale,
                             attn_normalize=attn_normalize,
+                            norm=self.config.block.norm,
+                            norm_eps=self.config.block.norm_eps,
                         )
                         for _ in range(self.config.num_decoder_layers)
                     ]
                 )
 
-            self.dec_final_norm = nn.LayerNorm(self.config.d_model)
+            self.dec_final_norm = make_norm(
+                self.config.block.norm,
+                self.config.d_model,
+                self.config.block.norm_eps,
+            )
             self.lm_head = nn.Linear(self.config.d_model, self.config.vocab_size, bias=False)
 
             if self.config.tie_weights:
