@@ -31,6 +31,8 @@ class TransformerBlock(nn.Module):
         attn_normalize=None,             # callable(scores)->weights, only for manual backend
         norm: str = "layernorm",
         norm_eps: float = 1e-5,
+        positional: str = "absolute",
+        max_seq_len: int = 2048,
     ):
         super().__init__()
 
@@ -51,6 +53,8 @@ class TransformerBlock(nn.Module):
             backend=attn_backend,
             scale=attn_scale,
             normalize=attn_normalize,
+            positional=positional,
+            max_seq_len=max_seq_len,
         )
 
         # Default transformer FFN dims: [d_model, 4*d_model, d_model]
@@ -70,6 +74,7 @@ class TransformerBlock(nn.Module):
         key_padding_mask: torch.Tensor | None = None,
         is_causal: bool = False,
         context: torch.Tensor | None = None,   # for cross-attn if desired
+        pos_offset: int = 0,
     ) -> torch.Tensor:
         if self.norm_style == "pre":
             # Attention block (pre-norm)
@@ -80,6 +85,7 @@ class TransformerBlock(nn.Module):
                 attn_mask=attn_mask,
                 key_padding_mask=key_padding_mask,
                 is_causal=is_causal,
+                pos_offset=pos_offset,
             )
             x = x + self.resid_dropout(h)
 
@@ -96,6 +102,7 @@ class TransformerBlock(nn.Module):
             attn_mask=attn_mask,
             key_padding_mask=key_padding_mask,
             is_causal=is_causal,
+            pos_offset=pos_offset,
         )
         x = self.ln1(x + self.resid_dropout(h))
 
