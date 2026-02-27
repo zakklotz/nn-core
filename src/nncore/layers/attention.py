@@ -85,9 +85,14 @@ class MultiheadAttention(nn.Module):
         kv_cache=None,
         layer_idx: int | None = None,
         is_decode: bool = False,
+        step_cache=None,
+        step_idx: int | None = None,
     ) -> torch.Tensor:
         if context is None:
             context = x
+
+        _ = step_cache
+        _ = step_idx
 
         q = self.q_proj(x)
         k = self.k_proj(context)
