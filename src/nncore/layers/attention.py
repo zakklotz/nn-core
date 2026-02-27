@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 
 from nncore.functional import scaled_dot_product_attention
-
+from nncore.utils.shapes import check_key_padding_mask
 
 class MultiheadAttention(nn.Module):
     """
@@ -98,6 +98,12 @@ class MultiheadAttention(nn.Module):
         q = self.q_proj(x)         # (B, T, d_model)
         k = self.k_proj(context)   # (B, S, d_model)
         v = self.v_proj(context)   # (B, S, d_model)
+
+        # Validate key_padding_mask if provided: (B,S) bool keep-mask
+        if key_padding_mask is not None:
+            B = context.shape[0]
+            S = context.shape[1]
+            check_key_padding_mask(key_padding_mask, batch=B, seqlen=S)
 
         # Heads
         q = self._split_heads(q)   # (B, H, T, d_head)

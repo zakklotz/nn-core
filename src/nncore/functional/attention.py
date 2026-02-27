@@ -6,6 +6,7 @@ from typing import Optional, Callable
 import torch
 import torch.nn.functional as F
 
+from nncore.utils.shapes import check_qkv, check_attn_mask_shape
 
 def _get_mask_value(dtype: torch.dtype) -> float:
     # Safe large negative for masking
@@ -159,6 +160,16 @@ def scaled_dot_product_attention(
       If None, uses softmax(scores, dim=-1).
       Only supported for backend='manual'.
     """
+    # Validate q/k/v shapes (B,H,T,Dh) and compatibility
+    check_qkv(q, k, v)
+
+    B, H, Tq, _ = q.shape
+    Tk = k.shape[-2]
+
+    # Validate attn_mask shapes if provided
+    if attn_mask is not None:
+        check_attn_mask_shape(attn_mask, B=B, H=H, Tq=Tq, Tk=Tk)
+
     if backend == "manual":
         return _sdpa_manual(
             q,
