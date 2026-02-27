@@ -3,6 +3,7 @@ import torch.nn as nn
 
 from nncore.blocks import TransformerBlock
 from nncore.layers import MultiheadAttention, MLP
+from nncore.models.config import TransformerConfig
 
 
 class TransformerDecoderBlock(nn.Module):
@@ -141,21 +142,21 @@ class Transformer(nn.Module):
       - decoder-only
       - seq2seq (encoder + decoder)
 
-    Teacher-forcing only in nn-core:
-      - encoder: forward(src_ids) -> enc_hidden
-      - decoder: forward(tgt_ids) -> logits or hidden
-      - seq2seq: forward(src_ids, tgt_ids) -> logits
+    Teacher-forcing forward only (generation belongs in harness).
 
-    Generation utilities belong in the harness.
+    New API: Transformer(config=TransformerConfig(...), attn_normalize=...)
+    Old API still supported via keyword args for backwards compatibility.
     """
 
     def __init__(
         self,
+        config: TransformerConfig | None = None,
         *,
-        vocab_size: int,
-        d_model: int,
-        num_heads: int,
-        max_seq_len: int,
+        # --- legacy kwargs (used only if config is None) ---
+        vocab_size: int | None = None,
+        d_model: int | None = None,
+        num_heads: int | None = None,
+        max_seq_len: int | None = None,
         num_encoder_layers: int = 0,
         num_decoder_layers: int = 0,
         mlp_dims: list[int] | None = None,
@@ -165,68 +166,91 @@ class Transformer(nn.Module):
         resid_dropout_p: float = 0.0,
         bias: bool = True,
         attn_scale: float | None = None,
-        attn_normalize=None,
         tie_weights: bool = True,
-        return_hidden: bool = False,  # if True, return hidden states instead of logits (decoder/seq2seq)
+        return_hidden: bool = False,
+        # --- non-serializable runtime injection ---
+        attn_normalize=None,
     ):
         super().__init__()
-        if num_encoder_layers == 0 and num_decoder_layers == 0:
+
+        if config is None:
+            if vocab_size is None or d_model is None or num_heads is None or max_seq_len is None:
+                raise ValueError(
+                    "When config is None, you must provide vocab_size, d_model, num_heads, max_seq_len."
+                )
+            config = TransformerConfig(
+                vocab_size=vocab_size,
+                d_model=d_model,
+                num_heads=num_heads,
+                max_seq_len=max_seq_len,
+                num_encoder_layers=num_encoder_layers,
+                num_decoder_layers=num_decoder_layers,
+                tie_weights=tie_weights,
+                return_hidden=return_hidden,
+            )
+            # map legacy into nested configs
+            config.attn.backend = attn_backend
+            config.attn.dropout_p = float(attn_dropout_p)
+            config.attn.resid_dropout_p = float(resid_dropout_p)
+            config.attn.scale = attn_scale
+            config.block.norm_style = norm_style
+            config.block.mlp_dims = mlp_dims
+            config.block.bias = bool(bias)
+
+        # config is now the source of truth
+        self.config = config
+
+        if self.config.num_encoder_layers == 0 and self.config.num_decoder_layers == 0:
             raise ValueError("At least one of num_encoder_layers or num_decoder_layers must be > 0.")
 
-        self.vocab_size = vocab_size
-        self.d_model = d_model
-        self.max_seq_len = max_seq_len
-        self.num_encoder_layers = int(num_encoder_layers)
-        self.num_decoder_layers = int(num_decoder_layers)
-        self.return_hidden = bool(return_hidden)
-
         # Embeddings (shared for simplicity)
-        self.tok_emb = nn.Embedding(vocab_size, d_model)
-        self.pos_emb = nn.Embedding(max_seq_len, d_model)
+        self.tok_emb = nn.Embedding(self.config.vocab_size, self.config.d_model)
+        self.pos_emb = nn.Embedding(self.config.max_seq_len, self.config.d_model)
 
         # Encoder stack (non-causal)
         self.encoder = None
-        if self.num_encoder_layers > 0:
+        if self.config.num_encoder_layers > 0:
             self.encoder = nn.ModuleList(
                 [
                     TransformerBlock(
-                        d_model=d_model,
-                        num_heads=num_heads,
-                        mlp_dims=mlp_dims,
-                        norm_style=norm_style,
-                        attn_backend=attn_backend,
-                        attn_dropout_p=attn_dropout_p,
-                        resid_dropout_p=resid_dropout_p,
-                        bias=bias,
-                        attn_scale=attn_scale,
+                        d_model=self.config.d_model,
+                        num_heads=self.config.num_heads,
+                        mlp_dims=self.config.block.mlp_dims,
+                        norm_style=self.config.block.norm_style,
+                        attn_backend=self.config.attn.backend,
+                        attn_dropout_p=self.config.attn.dropout_p,
+                        resid_dropout_p=self.config.attn.resid_dropout_p,
+                        bias=self.config.block.bias,
+                        attn_scale=self.config.attn.scale,
                         attn_normalize=attn_normalize,
                     )
-                    for _ in range(self.num_encoder_layers)
+                    for _ in range(self.config.num_encoder_layers)
                 ]
             )
-            self.enc_final_norm = nn.LayerNorm(d_model)
+            self.enc_final_norm = nn.LayerNorm(self.config.d_model)
         else:
             self.enc_final_norm = None
 
-        # Decoder stack (causal self-attn + cross-attn if encoder exists)
+        # Decoder stack
         self.decoder = None
-        if self.num_decoder_layers > 0:
-            if self.num_encoder_layers > 0:
+        if self.config.num_decoder_layers > 0:
+            if self.config.num_encoder_layers > 0:
+                # seq2seq decoder blocks w/ cross-attn
                 self.decoder = nn.ModuleList(
                     [
                         TransformerDecoderBlock(
-                            d_model=d_model,
-                            num_heads=num_heads,
-                            mlp_dims=mlp_dims,
-                            norm_style=norm_style,
-                            attn_backend=attn_backend,
-                            attn_dropout_p=attn_dropout_p,
-                            resid_dropout_p=resid_dropout_p,
-                            bias=bias,
-                            attn_scale=attn_scale,
+                            d_model=self.config.d_model,
+                            num_heads=self.config.num_heads,
+                            mlp_dims=self.config.block.mlp_dims,
+                            norm_style=self.config.block.norm_style,
+                            attn_backend=self.config.attn.backend,
+                            attn_dropout_p=self.config.attn.dropout_p,
+                            resid_dropout_p=self.config.attn.resid_dropout_p,
+                            bias=self.config.block.bias,
+                            attn_scale=self.config.attn.scale,
                             attn_normalize=attn_normalize,
                         )
-                        for _ in range(self.num_decoder_layers)
+                        for _ in range(self.config.num_decoder_layers)
                     ]
                 )
             else:
@@ -234,25 +258,25 @@ class Transformer(nn.Module):
                 self.decoder = nn.ModuleList(
                     [
                         TransformerBlock(
-                            d_model=d_model,
-                            num_heads=num_heads,
-                            mlp_dims=mlp_dims,
-                            norm_style=norm_style,
-                            attn_backend=attn_backend,
-                            attn_dropout_p=attn_dropout_p,
-                            resid_dropout_p=resid_dropout_p,
-                            bias=bias,
-                            attn_scale=attn_scale,
+                            d_model=self.config.d_model,
+                            num_heads=self.config.num_heads,
+                            mlp_dims=self.config.block.mlp_dims,
+                            norm_style=self.config.block.norm_style,
+                            attn_backend=self.config.attn.backend,
+                            attn_dropout_p=self.config.attn.dropout_p,
+                            resid_dropout_p=self.config.attn.resid_dropout_p,
+                            bias=self.config.block.bias,
+                            attn_scale=self.config.attn.scale,
                             attn_normalize=attn_normalize,
                         )
-                        for _ in range(self.num_decoder_layers)
+                        for _ in range(self.config.num_decoder_layers)
                     ]
                 )
 
-            self.dec_final_norm = nn.LayerNorm(d_model)
-            self.lm_head = nn.Linear(d_model, vocab_size, bias=False)
+            self.dec_final_norm = nn.LayerNorm(self.config.d_model)
+            self.lm_head = nn.Linear(self.config.d_model, self.config.vocab_size, bias=False)
 
-            if tie_weights:
+            if self.config.tie_weights:
                 self.lm_head.weight = self.tok_emb.weight
         else:
             self.dec_final_norm = None
@@ -261,8 +285,8 @@ class Transformer(nn.Module):
     def _embed(self, ids: torch.Tensor) -> torch.Tensor:
         # ids: (B, T)
         B, T = ids.shape
-        if T > self.max_seq_len:
-            raise ValueError(f"Sequence length {T} exceeds max_seq_len {self.max_seq_len}.")
+        if T > self.config.max_seq_len:
+            raise ValueError(f"Sequence length {T} exceeds max_seq_len {self.config.max_seq_len}.")
         pos = torch.arange(T, device=ids.device).unsqueeze(0).expand(B, T)
         return self.tok_emb(ids) + self.pos_emb(pos)
 
@@ -274,15 +298,6 @@ class Transformer(nn.Module):
         src_key_padding_mask: torch.Tensor | None = None,
         tgt_key_padding_mask: torch.Tensor | None = None,
     ):
-        """
-        Modes:
-          - encoder-only: tgt_ids is None and num_decoder_layers == 0
-              returns enc_hidden (B, S, d_model)
-          - decoder-only: tgt_ids is None and num_encoder_layers == 0
-              returns logits (B, T, vocab) or hidden if return_hidden
-          - seq2seq: tgt_ids provided and both stacks exist
-              returns logits (B, T, vocab) or hidden if return_hidden
-        """
         has_encoder = self.encoder is not None
         has_decoder = self.decoder is not None
 
@@ -300,7 +315,7 @@ class Transformer(nn.Module):
             for blk in self.decoder:
                 x = blk(x, key_padding_mask=tgt_key_padding_mask, is_causal=True)
             x = self.dec_final_norm(x) if self.dec_final_norm is not None else x
-            if self.return_hidden:
+            if self.config.return_hidden:
                 return x
             return self.lm_head(x)
 
@@ -325,10 +340,9 @@ class Transformer(nn.Module):
                     enc_key_padding_mask=src_key_padding_mask,
                 )
             else:
-                # Shouldn't happen in seq2seq mode, but keep safe.
                 dec = blk(dec, key_padding_mask=tgt_key_padding_mask, is_causal=True)
 
         dec = self.dec_final_norm(dec) if self.dec_final_norm is not None else dec
-        if self.return_hidden:
+        if self.config.return_hidden:
             return dec
         return self.lm_head(dec)
