@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 
 from nncore.blocks import TransformerBlock
+from nncore.cache import KVCache
 from nncore.layers import MultiheadAttention, MLP
 from nncore.layers.norm_factory import make_norm
 from nncore.models.config import TransformerConfig
@@ -33,6 +34,7 @@ class TransformerDecoderBlock(nn.Module):
         norm_eps: float = 1e-5,
         positional: str = "absolute",
         max_seq_len: int = 2048,
+        use_kv_cache: bool = False,
     ):
         super().__init__()
 
@@ -61,6 +63,7 @@ class TransformerDecoderBlock(nn.Module):
             normalize=attn_normalize,
             positional=positional,
             max_seq_len=max_seq_len,
+            use_kv_cache=use_kv_cache,
         )
 
         # Cross-attention (non-causal, context from encoder)
@@ -75,6 +78,7 @@ class TransformerDecoderBlock(nn.Module):
             normalize=attn_normalize,
             positional=positional,
             max_seq_len=max_seq_len,
+            use_kv_cache=False,
         )
 
         self.mlp = MLP(dimensions=mlp_dims)
@@ -93,6 +97,9 @@ class TransformerDecoderBlock(nn.Module):
         cross_attn_mask: torch.Tensor | None = None,
         enc_key_padding_mask: torch.Tensor | None = None,
         pos_offset: int = 0,
+        kv_cache: KVCache | None = None,
+        layer_idx: int | None = None,
+        is_decode: bool = False,
     ) -> torch.Tensor:
         if self.norm_style == "pre":
             # Self-attention (causal)
@@ -103,6 +110,9 @@ class TransformerDecoderBlock(nn.Module):
                 key_padding_mask=self_key_padding_mask,
                 is_causal=True,
                 pos_offset=pos_offset,
+                kv_cache=kv_cache,
+                layer_idx=layer_idx,
+                is_decode=is_decode,
             )
             x = x + self.resid_dropout(h)
 
@@ -131,6 +141,9 @@ class TransformerDecoderBlock(nn.Module):
             key_padding_mask=self_key_padding_mask,
             is_causal=True,
             pos_offset=pos_offset,
+            kv_cache=kv_cache,
+            layer_idx=layer_idx,
+            is_decode=is_decode,
         )
         x = self.ln_sa(x + self.resid_dropout(h))
 
@@ -242,6 +255,7 @@ class Transformer(nn.Module):
                         norm_eps=self.config.block.norm_eps,
                         positional=self.config.positional,
                         max_seq_len=self.config.max_seq_len,
+                        use_kv_cache=self.config.attn.use_kv_cache,
                     )
                     for _ in range(self.config.num_encoder_layers)
                 ]
@@ -276,6 +290,7 @@ class Transformer(nn.Module):
                             norm_eps=self.config.block.norm_eps,
                             positional=self.config.positional,
                             max_seq_len=self.config.max_seq_len,
+                            use_kv_cache=self.config.attn.use_kv_cache,
                         )
                         for _ in range(self.config.num_decoder_layers)
                     ]
@@ -299,6 +314,7 @@ class Transformer(nn.Module):
                             norm_eps=self.config.block.norm_eps,
                             positional=self.config.positional,
                             max_seq_len=self.config.max_seq_len,
+                            use_kv_cache=self.config.attn.use_kv_cache,
                         )
                         for _ in range(self.config.num_decoder_layers)
                     ]
@@ -317,14 +333,14 @@ class Transformer(nn.Module):
             self.dec_final_norm = None
             self.lm_head = None
 
-    def _embed(self, ids: torch.Tensor) -> torch.Tensor:
+    def _embed(self, ids: torch.Tensor, *, pos_offset: int = 0) -> torch.Tensor:
         # ids: (B, T)
         B, T = ids.shape
         if T > self.config.max_seq_len:
             raise ValueError(f"Sequence length {T} exceeds max_seq_len {self.config.max_seq_len}.")
         x = self.tok_emb(ids)
         if self.config.positional == "absolute":
-            pos = torch.arange(T, device=ids.device).unsqueeze(0).expand(B, T)
+            pos = torch.arange(pos_offset, pos_offset + T, device=ids.device).unsqueeze(0).expand(B, T)
             return x + self.pos_emb(pos)
         return x
 
@@ -335,23 +351,37 @@ class Transformer(nn.Module):
         *,
         src_key_padding_mask: torch.Tensor | None = None,
         tgt_key_padding_mask: torch.Tensor | None = None,
+        kv_cache: KVCache | None = None,
+        is_decode: bool = False,
     ):
+        pos_offset = 0
+        if kv_cache is not None and is_decode:
+            _, _, pos_offset = kv_cache.get(0)
+
         has_encoder = self.encoder is not None
         has_decoder = self.decoder is not None
 
         if has_encoder and not has_decoder:
             # Encoder-only
-            x = self._embed(src_ids)
-            for blk in self.encoder:
-                x = blk(x, key_padding_mask=src_key_padding_mask, is_causal=False, pos_offset=0)
+            x = self._embed(src_ids, pos_offset=pos_offset)
+            for i, blk in enumerate(self.encoder):
+                x = blk(x, key_padding_mask=src_key_padding_mask, is_causal=False, pos_offset=pos_offset, kv_cache=kv_cache, layer_idx=i, is_decode=is_decode)
             x = self.enc_final_norm(x) if self.enc_final_norm is not None else x
             return x
 
         if has_decoder and not has_encoder:
             # Decoder-only (GPT-like). src_ids is the decoder input ids here.
-            x = self._embed(src_ids)
-            for blk in self.decoder:
-                x = blk(x, key_padding_mask=tgt_key_padding_mask, is_causal=True, pos_offset=0)
+            x = self._embed(src_ids, pos_offset=pos_offset)
+            for i, blk in enumerate(self.decoder):
+                x = blk(
+                    x,
+                    key_padding_mask=tgt_key_padding_mask,
+                    is_causal=True,
+                    pos_offset=pos_offset,
+                    kv_cache=kv_cache,
+                    layer_idx=i,
+                    is_decode=is_decode,
+                )
             x = self.dec_final_norm(x) if self.dec_final_norm is not None else x
             if self.config.return_hidden:
                 return x
@@ -362,24 +392,35 @@ class Transformer(nn.Module):
             raise ValueError("tgt_ids must be provided for seq2seq mode (encoder+decoder).")
 
         # Encode
-        enc = self._embed(src_ids)
+        enc = self._embed(src_ids, pos_offset=0)
         for blk in self.encoder:
             enc = blk(enc, key_padding_mask=src_key_padding_mask, is_causal=False, pos_offset=0)
         enc = self.enc_final_norm(enc) if self.enc_final_norm is not None else enc
 
         # Decode with cross-attn
-        dec = self._embed(tgt_ids)
-        for blk in self.decoder:
+        dec = self._embed(tgt_ids, pos_offset=pos_offset)
+        for i, blk in enumerate(self.decoder):
             if isinstance(blk, TransformerDecoderBlock):
                 dec = blk(
                     dec,
                     enc_out=enc,
                     self_key_padding_mask=tgt_key_padding_mask,
                     enc_key_padding_mask=src_key_padding_mask,
-                    pos_offset=0,
+                    pos_offset=pos_offset,
+                    kv_cache=kv_cache,
+                    layer_idx=i,
+                    is_decode=is_decode,
                 )
             else:
-                dec = blk(dec, key_padding_mask=tgt_key_padding_mask, is_causal=True, pos_offset=0)
+                dec = blk(
+                    dec,
+                    key_padding_mask=tgt_key_padding_mask,
+                    is_causal=True,
+                    pos_offset=pos_offset,
+                    kv_cache=kv_cache,
+                    layer_idx=i,
+                    is_decode=is_decode,
+                )
 
         dec = self.dec_final_norm(dec) if self.dec_final_norm is not None else dec
         if self.config.return_hidden:

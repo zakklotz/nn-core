@@ -33,6 +33,7 @@ class TransformerBlock(nn.Module):
         norm_eps: float = 1e-5,
         positional: str = "absolute",
         max_seq_len: int = 2048,
+        use_kv_cache: bool = False,
     ):
         super().__init__()
 
@@ -55,6 +56,7 @@ class TransformerBlock(nn.Module):
             normalize=attn_normalize,
             positional=positional,
             max_seq_len=max_seq_len,
+            use_kv_cache=use_kv_cache,
         )
 
         # Default transformer FFN dims: [d_model, 4*d_model, d_model]
@@ -75,6 +77,9 @@ class TransformerBlock(nn.Module):
         is_causal: bool = False,
         context: torch.Tensor | None = None,   # for cross-attn if desired
         pos_offset: int = 0,
+        kv_cache=None,
+        layer_idx: int | None = None,
+        is_decode: bool = False,
     ) -> torch.Tensor:
         if self.norm_style == "pre":
             # Attention block (pre-norm)
@@ -86,6 +91,9 @@ class TransformerBlock(nn.Module):
                 key_padding_mask=key_padding_mask,
                 is_causal=is_causal,
                 pos_offset=pos_offset,
+                kv_cache=kv_cache,
+                layer_idx=layer_idx,
+                is_decode=is_decode,
             )
             x = x + self.resid_dropout(h)
 
@@ -103,6 +111,9 @@ class TransformerBlock(nn.Module):
             key_padding_mask=key_padding_mask,
             is_causal=is_causal,
             pos_offset=pos_offset,
+            kv_cache=kv_cache,
+            layer_idx=layer_idx,
+            is_decode=is_decode,
         )
         x = self.ln1(x + self.resid_dropout(h))
 
