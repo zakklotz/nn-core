@@ -6,7 +6,7 @@ from nncore.cache import KVCache
 from nncore.layers import MultiheadAttention, MLP
 from nncore.layers.norm_factory import make_norm
 from nncore.models.config import TransformerConfig
-from nncore.recurrence import RecurrenceEngine, ResidualRule
+from nncore.recurrence import ExitRouter, RecurrenceEngine, ResidualRule
 
 
 class TransformerDecoderBlock(nn.Module):
@@ -421,6 +421,7 @@ class Transformer(nn.Module):
         step_cache=None,
         step_idx: int | None = None,
         return_aux: bool = False,
+        exit_router: ExitRouter | None = None,
     ):
         pos_offset = 0
         if kv_cache is not None and is_decode:
@@ -444,6 +445,7 @@ class Transformer(nn.Module):
                         "is_causal": False,
                         "pos_offset": pos_offset,
                     },
+                    exit_router=exit_router,
                 )
                 if return_aux:
                     x, rec_aux = out
@@ -487,6 +489,7 @@ class Transformer(nn.Module):
                         "is_causal": True,
                         "pos_offset": pos_offset,
                     },
+                    exit_router=exit_router,
                 )
                 if return_aux:
                     x, rec_aux = out
@@ -536,6 +539,7 @@ class Transformer(nn.Module):
                     "is_causal": False,
                     "pos_offset": 0,
                 },
+                exit_router=exit_router,
             )
             if return_aux:
                 enc, rec_aux = out
