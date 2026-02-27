@@ -56,6 +56,69 @@ Those belong in experiment repositories that depend on this core.
 
 ------------------------------------------------------------------------
 
+## Quickstart
+
+### Create a tiny decoder-only Transformer
+
+```python
+from nncore.models import TransformerConfig, BlockConfig, AttentionConfig, Transformer
+
+cfg = TransformerConfig(
+    vocab_size=256,
+    d_model=128,
+    n_layers=4,
+    max_seq_len=1024,
+    block=BlockConfig(
+        attn=AttentionConfig(n_heads=4),
+        norm="rmsnorm",
+        positional="rope",
+        attn_backend="auto",
+        ffn_type="mlp",
+    ),
+)
+
+model = Transformer(cfg)
+```
+
+### Decode-time KV cache (incremental generation)
+
+```python
+import torch
+from nncore.cache import KVCache
+
+model.eval()
+cache = KVCache(num_layers=model.cfg.n_layers)
+
+# prefill
+prefix = torch.randint(0, cfg.vocab_size, (1, 16))
+logits = model(prefix, kv_cache=cache, is_decode=False)
+
+# decode 1 token at a time
+next_tok = torch.randint(0, cfg.vocab_size, (1, 1))
+logits_step = model(next_tok, kv_cache=cache, is_decode=True)
+```
+
+### MoE + aux losses (opt-in)
+
+```python
+from nncore.models import MoEConfig
+
+cfg.block.ffn_type = "moe"
+cfg.block.moe = MoEConfig(num_experts=8, top_k=2, aux_loss=True)
+
+logits, aux = model(torch.randint(0, cfg.vocab_size, (1, 8)), return_aux=True)
+print(aux.keys())
+```
+
+### Recurrence (shared block)
+
+```python
+cfg.recursive = True
+cfg.recurrence_steps = 4
+logits = model(torch.randint(0, cfg.vocab_size, (1, 32)))
+```
+
+
 ## Installation
 
 Editable install:
@@ -116,7 +179,7 @@ pytest -q
 Or run a minimal sanity check:
 
 ``` bash
-python scripts/smoke_lm.py
+python scripts/smoke_toy_lm.py
 ```
 
 Smoke tests verify:
@@ -140,14 +203,20 @@ Smoke tests verify:
 
 ## Project Structure (High-Level)
 
+    scripts/                 # minimal smoke scripts / entrypoints
     src/nncore/
-      layers/        # atomic neural layers
-      blocks/        # composed modules (attention, transformer, MoE)
-      models/        # reference skeletons
-      train/         # generic training engine
-      optim/         # optimizer + schedulers
-      losses/        # reusable losses
-      smoke/         # minimal end-to-end verification tasks
+      layers/                # atomic neural layers (attention, norms, etc.)
+      blocks/                # composed modules (transformer blocks)
+      models/                # reference models (encoder/decoder/seq2seq)
+      functional/            # backend routing (e.g., attention kernels)
+      positional/            # positional encodings (RoPE)
+      cache/                 # KVCache (decode) + StepCache seam (steps)
+      moe/                   # router/experts/MoELayer
+      recurrence/            # RecurrenceEngine, UpdateRules, ExitRouter seam
+      constraints/           # loss plugins (registry + base protocol)
+      hooks/                 # hidden/logits/loss hooks
+      train/                 # trainer/engine
+      utils/                 # logging, meters, shapes, device helpers
 
 ------------------------------------------------------------------------
 
