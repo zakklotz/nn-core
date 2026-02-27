@@ -80,6 +80,8 @@ class TransformerBlock(nn.Module):
         kv_cache=None,
         layer_idx: int | None = None,
         is_decode: bool = False,
+        step_cache=None,
+        step_idx: int | None = None,
     ) -> torch.Tensor:
         if self.norm_style == "pre":
             # Attention block (pre-norm)
@@ -94,6 +96,8 @@ class TransformerBlock(nn.Module):
                 kv_cache=kv_cache,
                 layer_idx=layer_idx,
                 is_decode=is_decode,
+                step_cache=step_cache,
+                step_idx=step_idx,
             )
             x = x + self.resid_dropout(h)
 
@@ -114,6 +118,8 @@ class TransformerBlock(nn.Module):
             kv_cache=kv_cache,
             layer_idx=layer_idx,
             is_decode=is_decode,
+            step_cache=step_cache,
+            step_idx=step_idx,
         )
         x = self.ln1(x + self.resid_dropout(h))
 

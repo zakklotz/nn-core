@@ -100,6 +100,8 @@ class TransformerDecoderBlock(nn.Module):
         kv_cache: KVCache | None = None,
         layer_idx: int | None = None,
         is_decode: bool = False,
+        step_cache=None,
+        step_idx: int | None = None,
     ) -> torch.Tensor:
         if self.norm_style == "pre":
             # Self-attention (causal)
@@ -113,6 +115,8 @@ class TransformerDecoderBlock(nn.Module):
                 kv_cache=kv_cache,
                 layer_idx=layer_idx,
                 is_decode=is_decode,
+                step_cache=step_cache,
+                step_idx=step_idx,
             )
             x = x + self.resid_dropout(h)
 
@@ -144,6 +148,8 @@ class TransformerDecoderBlock(nn.Module):
             kv_cache=kv_cache,
             layer_idx=layer_idx,
             is_decode=is_decode,
+            step_cache=step_cache,
+            step_idx=step_idx,
         )
         x = self.ln_sa(x + self.resid_dropout(h))
 
@@ -353,6 +359,8 @@ class Transformer(nn.Module):
         tgt_key_padding_mask: torch.Tensor | None = None,
         kv_cache: KVCache | None = None,
         is_decode: bool = False,
+        step_cache=None,
+        step_idx: int | None = None,
     ):
         pos_offset = 0
         if kv_cache is not None and is_decode:
@@ -365,7 +373,7 @@ class Transformer(nn.Module):
             # Encoder-only
             x = self._embed(src_ids, pos_offset=pos_offset)
             for i, blk in enumerate(self.encoder):
-                x = blk(x, key_padding_mask=src_key_padding_mask, is_causal=False, pos_offset=pos_offset, kv_cache=kv_cache, layer_idx=i, is_decode=is_decode)
+                x = blk(x, key_padding_mask=src_key_padding_mask, is_causal=False, pos_offset=pos_offset, kv_cache=kv_cache, layer_idx=i, is_decode=is_decode, step_cache=step_cache, step_idx=step_idx)
             x = self.enc_final_norm(x) if self.enc_final_norm is not None else x
             return x
 
@@ -381,6 +389,8 @@ class Transformer(nn.Module):
                     kv_cache=kv_cache,
                     layer_idx=i,
                     is_decode=is_decode,
+                    step_cache=step_cache,
+                    step_idx=step_idx,
                 )
             x = self.dec_final_norm(x) if self.dec_final_norm is not None else x
             if self.config.return_hidden:
@@ -410,6 +420,8 @@ class Transformer(nn.Module):
                     kv_cache=kv_cache,
                     layer_idx=i,
                     is_decode=is_decode,
+                    step_cache=step_cache,
+                    step_idx=step_idx,
                 )
             else:
                 dec = blk(
@@ -420,6 +432,8 @@ class Transformer(nn.Module):
                     kv_cache=kv_cache,
                     layer_idx=i,
                     is_decode=is_decode,
+                    step_cache=step_cache,
+                    step_idx=step_idx,
                 )
 
         dec = self.dec_final_norm(dec) if self.dec_final_norm is not None else dec
