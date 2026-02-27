@@ -6,6 +6,7 @@ from nncore.cache import KVCache
 from nncore.layers import MultiheadAttention, MLP
 from nncore.layers.norm_factory import make_norm
 from nncore.models.config import TransformerConfig
+from nncore.recurrence import RecurrenceEngine, ResidualRule
 
 
 class TransformerDecoderBlock(nn.Module):
@@ -243,31 +244,58 @@ class Transformer(nn.Module):
 
         # Encoder stack (non-causal)
         self.encoder = None
+        self.encoder_engine = None
         if self.config.num_encoder_layers > 0:
-            self.encoder = nn.ModuleList(
-                [
-                    TransformerBlock(
-                        d_model=self.config.d_model,
-                        num_heads=self.config.num_heads,
-                        mlp_dims=self.config.block.mlp_dims,
-                        norm_style=self.config.block.norm_style,
-                        attn_backend=self.config.attn.attn_backend,
-                        attn_dropout_p=self.config.attn.dropout_p,
-                        resid_dropout_p=self.config.attn.resid_dropout_p,
-                        bias=self.config.block.bias,
-                        attn_scale=self.config.attn.scale,
-                        attn_normalize=attn_normalize,
-                        norm=self.config.block.norm,
-                        norm_eps=self.config.block.norm_eps,
-                        positional=self.config.positional,
-                        max_seq_len=self.config.max_seq_len,
-                        use_kv_cache=self.config.attn.use_kv_cache,
-                        ffn_type=self.config.block.ffn_type,
-                        moe_cfg=self.config.block.moe,
-                    )
-                    for _ in range(self.config.num_encoder_layers)
-                ]
-            )
+            if self.config.recursive:
+                shared_block = TransformerBlock(
+                    d_model=self.config.d_model,
+                    num_heads=self.config.num_heads,
+                    mlp_dims=self.config.block.mlp_dims,
+                    norm_style=self.config.block.norm_style,
+                    attn_backend=self.config.attn.attn_backend,
+                    attn_dropout_p=self.config.attn.dropout_p,
+                    resid_dropout_p=self.config.attn.resid_dropout_p,
+                    bias=self.config.block.bias,
+                    attn_scale=self.config.attn.scale,
+                    attn_normalize=attn_normalize,
+                    norm=self.config.block.norm,
+                    norm_eps=self.config.block.norm_eps,
+                    positional=self.config.positional,
+                    max_seq_len=self.config.max_seq_len,
+                    use_kv_cache=False,
+                    ffn_type=self.config.block.ffn_type,
+                    moe_cfg=self.config.block.moe,
+                )
+                self.encoder_engine = RecurrenceEngine(
+                    block=shared_block,
+                    rule=ResidualRule(),
+                    n_steps_default=self.config.recurrence_steps,
+                )
+            else:
+                self.encoder = nn.ModuleList(
+                    [
+                        TransformerBlock(
+                            d_model=self.config.d_model,
+                            num_heads=self.config.num_heads,
+                            mlp_dims=self.config.block.mlp_dims,
+                            norm_style=self.config.block.norm_style,
+                            attn_backend=self.config.attn.attn_backend,
+                            attn_dropout_p=self.config.attn.dropout_p,
+                            resid_dropout_p=self.config.attn.resid_dropout_p,
+                            bias=self.config.block.bias,
+                            attn_scale=self.config.attn.scale,
+                            attn_normalize=attn_normalize,
+                            norm=self.config.block.norm,
+                            norm_eps=self.config.block.norm_eps,
+                            positional=self.config.positional,
+                            max_seq_len=self.config.max_seq_len,
+                            use_kv_cache=self.config.attn.use_kv_cache,
+                            ffn_type=self.config.block.ffn_type,
+                            moe_cfg=self.config.block.moe,
+                        )
+                        for _ in range(self.config.num_encoder_layers)
+                    ]
+                )
             self.enc_final_norm = make_norm(
                 self.config.block.norm,
                 self.config.d_model,
@@ -278,6 +306,7 @@ class Transformer(nn.Module):
 
         # Decoder stack
         self.decoder = None
+        self.decoder_engine = None
         if self.config.num_decoder_layers > 0:
             if self.config.num_encoder_layers > 0:
                 # seq2seq decoder blocks w/ cross-attn
@@ -305,30 +334,56 @@ class Transformer(nn.Module):
                 )
             else:
                 # decoder-only can reuse TransformerBlock with is_causal=True
-                self.decoder = nn.ModuleList(
-                    [
-                        TransformerBlock(
-                            d_model=self.config.d_model,
-                            num_heads=self.config.num_heads,
-                            mlp_dims=self.config.block.mlp_dims,
-                            norm_style=self.config.block.norm_style,
-                            attn_backend=self.config.attn.attn_backend,
-                            attn_dropout_p=self.config.attn.dropout_p,
-                            resid_dropout_p=self.config.attn.resid_dropout_p,
-                            bias=self.config.block.bias,
-                            attn_scale=self.config.attn.scale,
-                            attn_normalize=attn_normalize,
-                            norm=self.config.block.norm,
-                            norm_eps=self.config.block.norm_eps,
-                            positional=self.config.positional,
-                            max_seq_len=self.config.max_seq_len,
-                            use_kv_cache=self.config.attn.use_kv_cache,
-                            ffn_type=self.config.block.ffn_type,
-                            moe_cfg=self.config.block.moe,
-                        )
-                        for _ in range(self.config.num_decoder_layers)
-                    ]
-                )
+                if self.config.recursive:
+                    shared_block = TransformerBlock(
+                        d_model=self.config.d_model,
+                        num_heads=self.config.num_heads,
+                        mlp_dims=self.config.block.mlp_dims,
+                        norm_style=self.config.block.norm_style,
+                        attn_backend=self.config.attn.attn_backend,
+                        attn_dropout_p=self.config.attn.dropout_p,
+                        resid_dropout_p=self.config.attn.resid_dropout_p,
+                        bias=self.config.block.bias,
+                        attn_scale=self.config.attn.scale,
+                        attn_normalize=attn_normalize,
+                        norm=self.config.block.norm,
+                        norm_eps=self.config.block.norm_eps,
+                        positional=self.config.positional,
+                        max_seq_len=self.config.max_seq_len,
+                        use_kv_cache=False,
+                        ffn_type=self.config.block.ffn_type,
+                        moe_cfg=self.config.block.moe,
+                    )
+                    self.decoder_engine = RecurrenceEngine(
+                        block=shared_block,
+                        rule=ResidualRule(),
+                        n_steps_default=self.config.recurrence_steps,
+                    )
+                else:
+                    self.decoder = nn.ModuleList(
+                        [
+                            TransformerBlock(
+                                d_model=self.config.d_model,
+                                num_heads=self.config.num_heads,
+                                mlp_dims=self.config.block.mlp_dims,
+                                norm_style=self.config.block.norm_style,
+                                attn_backend=self.config.attn.attn_backend,
+                                attn_dropout_p=self.config.attn.dropout_p,
+                                resid_dropout_p=self.config.attn.resid_dropout_p,
+                                bias=self.config.block.bias,
+                                attn_scale=self.config.attn.scale,
+                                attn_normalize=attn_normalize,
+                                norm=self.config.block.norm,
+                                norm_eps=self.config.block.norm_eps,
+                                positional=self.config.positional,
+                                max_seq_len=self.config.max_seq_len,
+                                use_kv_cache=self.config.attn.use_kv_cache,
+                                ffn_type=self.config.block.ffn_type,
+                                moe_cfg=self.config.block.moe,
+                            )
+                            for _ in range(self.config.num_decoder_layers)
+                        ]
+                    )
 
             self.dec_final_norm = make_norm(
                 self.config.block.norm,
@@ -373,56 +428,92 @@ class Transformer(nn.Module):
 
         aux_totals: dict[str, torch.Tensor] = {}
 
-        has_encoder = self.encoder is not None
-        has_decoder = self.decoder is not None
+        has_encoder = (self.encoder is not None) or (self.encoder_engine is not None)
+        has_decoder = (self.decoder is not None) or (self.decoder_engine is not None)
 
         if has_encoder and not has_decoder:
             # Encoder-only
             x = self._embed(src_ids, pos_offset=pos_offset)
-            for i, blk in enumerate(self.encoder):
-                out = blk(
+            if self.encoder_engine is not None:
+                out = self.encoder_engine(
                     x,
-                    key_padding_mask=src_key_padding_mask,
-                    is_causal=False,
-                    pos_offset=pos_offset,
-                    kv_cache=kv_cache,
-                    layer_idx=i,
-                    is_decode=is_decode,
                     step_cache=step_cache,
-                    step_idx=step_idx,
                     return_aux=return_aux,
+                    block_kwargs={
+                        "key_padding_mask": src_key_padding_mask,
+                        "is_causal": False,
+                        "pos_offset": pos_offset,
+                    },
                 )
                 if return_aux:
-                    x, blk_aux = out
-                    for k, v in blk_aux.items():
+                    x, rec_aux = out
+                    for k, v in rec_aux.items():
                         aux_totals[k] = aux_totals.get(k, 0.0) + v
                 else:
                     x = out
+            else:
+                for i, blk in enumerate(self.encoder):
+                    out = blk(
+                        x,
+                        key_padding_mask=src_key_padding_mask,
+                        is_causal=False,
+                        pos_offset=pos_offset,
+                        kv_cache=kv_cache,
+                        layer_idx=i,
+                        is_decode=is_decode,
+                        step_cache=step_cache,
+                        step_idx=step_idx,
+                        return_aux=return_aux,
+                    )
+                    if return_aux:
+                        x, blk_aux = out
+                        for k, v in blk_aux.items():
+                            aux_totals[k] = aux_totals.get(k, 0.0) + v
+                    else:
+                        x = out
             x = self.enc_final_norm(x) if self.enc_final_norm is not None else x
             return (x, aux_totals) if return_aux else x
 
         if has_decoder and not has_encoder:
             # Decoder-only (GPT-like). src_ids is the decoder input ids here.
             x = self._embed(src_ids, pos_offset=pos_offset)
-            for i, blk in enumerate(self.decoder):
-                out = blk(
+            if self.decoder_engine is not None:
+                out = self.decoder_engine(
                     x,
-                    key_padding_mask=tgt_key_padding_mask,
-                    is_causal=True,
-                    pos_offset=pos_offset,
-                    kv_cache=kv_cache,
-                    layer_idx=i,
-                    is_decode=is_decode,
                     step_cache=step_cache,
-                    step_idx=step_idx,
                     return_aux=return_aux,
+                    block_kwargs={
+                        "key_padding_mask": tgt_key_padding_mask,
+                        "is_causal": True,
+                        "pos_offset": pos_offset,
+                    },
                 )
                 if return_aux:
-                    x, blk_aux = out
-                    for k, v in blk_aux.items():
+                    x, rec_aux = out
+                    for k, v in rec_aux.items():
                         aux_totals[k] = aux_totals.get(k, 0.0) + v
                 else:
                     x = out
+            else:
+                for i, blk in enumerate(self.decoder):
+                    out = blk(
+                        x,
+                        key_padding_mask=tgt_key_padding_mask,
+                        is_causal=True,
+                        pos_offset=pos_offset,
+                        kv_cache=kv_cache,
+                        layer_idx=i,
+                        is_decode=is_decode,
+                        step_cache=step_cache,
+                        step_idx=step_idx,
+                        return_aux=return_aux,
+                    )
+                    if return_aux:
+                        x, blk_aux = out
+                        for k, v in blk_aux.items():
+                            aux_totals[k] = aux_totals.get(k, 0.0) + v
+                    else:
+                        x = out
             x = self.dec_final_norm(x) if self.dec_final_norm is not None else x
             if self.config.return_hidden:
                 return (x, aux_totals) if return_aux else x
@@ -435,20 +526,38 @@ class Transformer(nn.Module):
 
         # Encode
         enc = self._embed(src_ids, pos_offset=0)
-        for i, blk in enumerate(self.encoder):
-            out = blk(
+        if self.encoder_engine is not None:
+            out = self.encoder_engine(
                 enc,
-                key_padding_mask=src_key_padding_mask,
-                is_causal=False,
-                pos_offset=0,
+                step_cache=step_cache,
                 return_aux=return_aux,
+                block_kwargs={
+                    "key_padding_mask": src_key_padding_mask,
+                    "is_causal": False,
+                    "pos_offset": 0,
+                },
             )
             if return_aux:
-                enc, blk_aux = out
-                for k, v in blk_aux.items():
+                enc, rec_aux = out
+                for k, v in rec_aux.items():
                     aux_totals[k] = aux_totals.get(k, 0.0) + v
             else:
                 enc = out
+        else:
+            for i, blk in enumerate(self.encoder):
+                out = blk(
+                    enc,
+                    key_padding_mask=src_key_padding_mask,
+                    is_causal=False,
+                    pos_offset=0,
+                    return_aux=return_aux,
+                )
+                if return_aux:
+                    enc, blk_aux = out
+                    for k, v in blk_aux.items():
+                        aux_totals[k] = aux_totals.get(k, 0.0) + v
+                else:
+                    enc = out
         enc = self.enc_final_norm(enc) if self.enc_final_norm is not None else enc
 
         # Decode with cross-attn
