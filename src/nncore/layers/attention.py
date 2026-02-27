@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 
 from nncore.functional import scaled_dot_product_attention
+from nncore.positional import Rope
 from nncore.utils.shapes import check_key_padding_mask
 
 class MultiheadAttention(nn.Module):
@@ -39,6 +40,8 @@ class MultiheadAttention(nn.Module):
         backend: str = "manual",   # "manual" or "sdpa"
         scale: float | None = None,
         normalize=None,            # callable(scores)->weights, only for manual
+        positional: str = "absolute",
+        max_seq_len: int = 2048,
     ):
         super().__init__()
         if d_model % num_heads != 0:
@@ -49,12 +52,16 @@ class MultiheadAttention(nn.Module):
         self.d_model = d_model
         self.num_heads = num_heads
         self.d_head = d_model // num_heads
+        self.rope = None
 
         self.attn_dropout_p = float(attn_dropout_p)
         self.out_dropout_p = float(out_dropout_p)
         self.backend = backend
         self.scale = scale  # optional override for 1/sqrt(d_head)
         self.normalize = normalize
+
+        if positional == "rope":
+            self.rope = Rope(dim=self.d_head, max_seq_len=max_seq_len)
 
         # Projections
         self.q_proj = nn.Linear(d_model, d_model, bias=bias)
@@ -86,6 +93,7 @@ class MultiheadAttention(nn.Module):
         attn_mask: torch.Tensor | None = None,
         key_padding_mask: torch.Tensor | None = None,
         is_causal: bool = False,
+        pos_offset: int = 0,
     ) -> torch.Tensor:
         """
         Returns:
@@ -109,6 +117,9 @@ class MultiheadAttention(nn.Module):
         q = self._split_heads(q)   # (B, H, T, d_head)
         k = self._split_heads(k)   # (B, H, S, d_head)
         v = self._split_heads(v)   # (B, H, S, d_head)
+
+        if self.rope is not None and q.shape[-2] == k.shape[-2]:
+            q, k = self.rope.apply(q, k, pos_offset=pos_offset)
 
         # key_padding_mask (B, S) keep-mask -> broadcastable keep-mask (B,1,1,S)
         if key_padding_mask is not None:
