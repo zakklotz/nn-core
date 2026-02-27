@@ -204,6 +204,7 @@ class Transformer(nn.Module):
             )
             # map legacy into nested configs
             config.attn.backend = attn_backend
+            config.attn.attn_backend = attn_backend
             config.attn.dropout_p = float(attn_dropout_p)
             config.attn.resid_dropout_p = float(resid_dropout_p)
             config.attn.scale = attn_scale
@@ -231,7 +232,7 @@ class Transformer(nn.Module):
                         num_heads=self.config.num_heads,
                         mlp_dims=self.config.block.mlp_dims,
                         norm_style=self.config.block.norm_style,
-                        attn_backend=self.config.attn.backend,
+                        attn_backend=self.config.attn.attn_backend,
                         attn_dropout_p=self.config.attn.dropout_p,
                         resid_dropout_p=self.config.attn.resid_dropout_p,
                         bias=self.config.block.bias,
@@ -265,7 +266,7 @@ class Transformer(nn.Module):
                             num_heads=self.config.num_heads,
                             mlp_dims=self.config.block.mlp_dims,
                             norm_style=self.config.block.norm_style,
-                            attn_backend=self.config.attn.backend,
+                            attn_backend=self.config.attn.attn_backend,
                             attn_dropout_p=self.config.attn.dropout_p,
                             resid_dropout_p=self.config.attn.resid_dropout_p,
                             bias=self.config.block.bias,
@@ -288,7 +289,7 @@ class Transformer(nn.Module):
                             num_heads=self.config.num_heads,
                             mlp_dims=self.config.block.mlp_dims,
                             norm_style=self.config.block.norm_style,
-                            attn_backend=self.config.attn.backend,
+                            attn_backend=self.config.attn.attn_backend,
                             attn_dropout_p=self.config.attn.dropout_p,
                             resid_dropout_p=self.config.attn.resid_dropout_p,
                             bias=self.config.block.bias,

@@ -3,7 +3,7 @@
 import torch
 import torch.nn as nn
 
-from nncore.functional import scaled_dot_product_attention
+from nncore.functional import attention_forward
 from nncore.positional import Rope
 from nncore.utils.shapes import check_key_padding_mask
 
@@ -37,7 +37,7 @@ class MultiheadAttention(nn.Module):
         bias: bool = True,
         attn_dropout_p: float = 0.0,
         out_dropout_p: float = 0.0,
-        backend: str = "manual",   # "manual" or "sdpa"
+        backend: str = "manual",   # "manual", "sdpa", or "auto"
         scale: float | None = None,
         normalize=None,            # callable(scores)->weights, only for manual
         positional: str = "absolute",
@@ -139,7 +139,7 @@ class MultiheadAttention(nn.Module):
                     attn_mask = attn_mask + additive_pad
 
         # Attention kernel
-        y = scaled_dot_product_attention(
+        y = attention_forward(
             q,
             k,
             v,
