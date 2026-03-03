@@ -1,6 +1,30 @@
 import torch
 import torch.nn as nn
-from typing import Optional, Sequence
+from typing import Literal, Optional, Sequence
+
+
+def build_mlp(
+    d_model: int,
+    d_ff: int,
+    *,
+    activation: Literal["gelu", "silu", "relu"] = "gelu",
+    dropout_p: float = 0.0,
+) -> "MLP":
+    """Build standard transformer MLP: Linear -> Act -> Linear.
+
+    Returns MLP with dimensions [d_model, d_ff, d_model].
+    dropout_p is ignored (MLP has no built-in dropout); use wrapper if needed.
+    """
+    act_map = {
+        "gelu": nn.GELU(),
+        "silu": nn.SiLU(),
+        "relu": nn.ReLU(),
+    }
+    act = act_map.get(activation.lower(), nn.GELU())
+    return MLP(
+        dimensions=[d_model, d_ff, d_model],
+        activations=[act, nn.Identity()],
+    )
 
 
 class MLP(nn.Module):

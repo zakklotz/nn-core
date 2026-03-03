@@ -1,7 +1,10 @@
 # src/nncore/layers/attention.py
 
+from __future__ import annotations
+
 import torch
 import torch.nn as nn
+from typing import Optional, Tuple, Union
 
 from nncore.functional import attention_forward
 from nncore.positional import Rope
@@ -83,11 +86,13 @@ class MultiheadAttention(nn.Module):
         is_causal: bool = False,
         pos_offset: int = 0,
         kv_cache=None,
+        cached_kv: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        return_kv: bool = False,
         layer_idx: int | None = None,
         is_decode: bool = False,
         step_cache=None,
         step_idx: int | None = None,
-    ) -> torch.Tensor:
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]]:
         if context is None:
             context = x
 
@@ -95,8 +100,15 @@ class MultiheadAttention(nn.Module):
         _ = step_idx
 
         q = self.q_proj(x)
-        k = self.k_proj(context)
-        v = self.v_proj(context)
+        if cached_kv is not None:
+            k_all, v_all = cached_kv
+            # cached k,v are already in (B, H, T, D) format
+        else:
+            k = self.k_proj(context)
+            v = self.v_proj(context)
+            k = self._split_heads(k)
+            v = self._split_heads(v)
+            k_all, v_all = k, v
 
         if key_padding_mask is not None:
             B = context.shape[0]
@@ -104,15 +116,15 @@ class MultiheadAttention(nn.Module):
             check_key_padding_mask(key_padding_mask, batch=B, seqlen=S)
 
         q = self._split_heads(q)
-        k = self._split_heads(k)
-        v = self._split_heads(v)
 
-        if self.rope is not None and q.shape[-2] == k.shape[-2]:
-            q, k = self.rope.apply(q, k, pos_offset=pos_offset)
+        if self.rope is not None and q.shape[-2] == k_all.shape[-2]:
+            if cached_kv is not None:
+                q, _ = self.rope.apply(q, k_all, pos_offset=pos_offset)
+            else:
+                q, k_all = self.rope.apply(q, k_all, pos_offset=pos_offset)
+                k = k_all
 
-        cache_active = self.use_kv_cache and kv_cache is not None
-        k_all = k
-        v_all = v
+        cache_active = self.use_kv_cache and kv_cache is not None and cached_kv is None
         kernel_is_causal = is_causal
 
         if cache_active:
@@ -166,4 +178,6 @@ class MultiheadAttention(nn.Module):
         y = self._merge_heads(y)
         y = self.out_proj(y)
         y = self.out_dropout(y)
+        if return_kv:
+            return y, (k_all, v_all)
         return y
