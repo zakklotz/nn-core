@@ -421,6 +421,7 @@ class Transformer(nn.Module):
         is_decode: bool = False,
         step_cache=None,
         step_idx: int | None = None,
+        recurrence_steps: int | None = None,
         return_aux: bool = False,
         exit_router: ExitRouter | None = None,
         hooks: list[Hook] | None = None,
@@ -440,6 +441,7 @@ class Transformer(nn.Module):
             if self.encoder_engine is not None:
                 out = self.encoder_engine(
                     x,
+                    n_steps=recurrence_steps,
                     step_cache=step_cache,
                     return_aux=return_aux,
                     block_kwargs={
@@ -490,6 +492,7 @@ class Transformer(nn.Module):
             if self.decoder_engine is not None:
                 out = self.decoder_engine(
                     x,
+                    n_steps=recurrence_steps,
                     step_cache=step_cache,
                     return_aux=return_aux,
                     block_kwargs={
@@ -552,6 +555,7 @@ class Transformer(nn.Module):
         if self.encoder_engine is not None:
             out = self.encoder_engine(
                 enc,
+                n_steps=recurrence_steps,
                 step_cache=step_cache,
                 return_aux=return_aux,
                 block_kwargs={
