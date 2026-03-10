@@ -199,6 +199,10 @@ Smoke tests verify:
 4.  No framework lock-in\
 5.  Extensible for future architectures
 
+## Docs
+
+- [TajalliyatBlock Phase 1](docs/tajalliyat.md)
+
 ------------------------------------------------------------------------
 
 ## Project Structure (High-Level)

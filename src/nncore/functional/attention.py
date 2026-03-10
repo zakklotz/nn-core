@@ -42,9 +42,13 @@ def _combine_masks(
     if causal_mask is None and attn_mask is None:
         return None
 
-    # If attn_mask is already additive, return it (caller will broadcast if needed).
     if attn_mask is not None and attn_mask.dtype != torch.bool:
-        return attn_mask
+        if causal_mask is None:
+            return attn_mask
+        mask_value = _get_mask_value(dtype)
+        causal_additive = torch.zeros_like(causal_mask, dtype=dtype)
+        causal_additive = causal_additive.masked_fill(~causal_mask, mask_value)
+        return attn_mask + causal_additive
 
     # Now both causal_mask (if present) and attn_mask (if present) are boolean keep-masks.
     if causal_mask is not None:
@@ -127,6 +131,13 @@ def _sdpa_torch(
         raise ValueError(
             "SDPA backend does not support custom normalize; use backend='manual'."
         )
+
+    if is_causal and attn_mask is not None:
+        T_q = q.shape[-2]
+        T_k = k.shape[-2]
+        causal_mask = _make_causal_mask(T_q, T_k, device=q.device, as_bool=True)
+        attn_mask = _combine_masks(causal_mask, attn_mask, dtype=q.dtype)
+        is_causal = False
 
     return F.scaled_dot_product_attention(
         q,

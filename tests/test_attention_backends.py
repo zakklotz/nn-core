@@ -29,3 +29,19 @@ def test_multihead_attention_auto_runs():
     y = attn(x, is_causal=True)
     assert y.shape == x.shape
     assert torch.isfinite(y).all()
+
+
+def test_multihead_attention_sdpa_supports_causal_with_padding_mask():
+    torch.manual_seed(0)
+    attn = MultiheadAttention(d_model=32, num_heads=4, backend="sdpa", attn_dropout_p=0.0)
+    x = torch.randn(2, 8, 32)
+    key_padding_mask = torch.tensor(
+        [
+            [True, True, True, True, True, False, False, False],
+            [True, True, True, True, True, True, True, True],
+        ],
+        dtype=torch.bool,
+    )
+    y = attn(x, key_padding_mask=key_padding_mask, is_causal=True)
+    assert y.shape == x.shape
+    assert torch.isfinite(y).all()

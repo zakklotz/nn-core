@@ -1,12 +1,17 @@
 # src/nncore/blocks/transformer.py
 
+from __future__ import annotations
+
 import torch
 import torch.nn as nn
+from typing import TYPE_CHECKING
 
 from nncore.layers import MultiheadAttention, MLP
 from nncore.layers.norm_factory import make_norm
-from nncore.models.config import MoEConfig
 from nncore.moe import MoELayer
+
+if TYPE_CHECKING:
+    from nncore.models.config import MoEConfig
 
 
 class TransformerBlock(nn.Module):

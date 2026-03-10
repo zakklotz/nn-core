@@ -3,8 +3,12 @@ from .config import (
     BlockConfig,
     ConstraintConfig,
     MoEConfig,
+    OFNConfig,
+    TajalliyatConfig,
     TransformerConfig,
 )
+from .ofn import OFNLM
+from .tajalliyat import TajalliyatLM
 from .transformer import Transformer, TransformerDecoderBlock
 
 __all__ = [
@@ -12,6 +16,10 @@ __all__ = [
     "BlockConfig",
     "ConstraintConfig",
     "MoEConfig",
+    "OFNConfig",
+    "OFNLM",
+    "TajalliyatConfig",
+    "TajalliyatLM",
     "TransformerConfig",
     "Transformer",
     "TransformerDecoderBlock",

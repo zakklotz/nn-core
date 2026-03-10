@@ -89,6 +89,7 @@ def check_attn_mask_shape(
     Accepted ranks:
       - (Tq, Tk)
       - (B, Tq, Tk)
+      - (B, 1, 1, Tk)
       - (B, 1, Tq, Tk)
       - (B, H, Tq, Tk)
 
@@ -123,9 +124,11 @@ def check_attn_mask_shape(
 
     # dim == 4
     b, h, tq, tk = sh
-    if b != B or tq != Tq or tk != Tk:
+    if b != B or tk != Tk:
         raise ValueError(
             f"attn_mask (4D) must match (B,*,Tq,Tk)=({B},*,{Tq},{Tk}), got {sh}"
         )
+    if tq not in (1, Tq):
+        raise ValueError(f"attn_mask query dim must be 1 or Tq={Tq}, got {tq}")
     if h not in (1, H):
         raise ValueError(f"attn_mask head dim must be 1 or H={H}, got {h}")
